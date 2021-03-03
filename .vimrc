@@ -153,6 +153,14 @@ map <F7> :NERDTreeToggle<CR>
 let g:NERDTreeWinPos = "right"
 "==========NerdTree Toggle==============
 
+"===CTRL-P Default Search Directory=====
+let g:ctrlp_cmd='CtrlP:pwd'
+"===CTRL-P Default Search Directory=====
+"===CTRL-P maximum files and depth======
+let g:ctrlp_max_files=0
+let g:ctrlp_max_depth=40
+"===CTRL-P maximum files and depth======
+
 "==========Map F5 to save===========
 inoremap <F5> <c-o>:Update<CR>
 "==========Map Ctrl+s to save===========
