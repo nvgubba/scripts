@@ -13,7 +13,7 @@ Plugin 'gmarik/Vundle.vim'
 " Keep Plugin commands between vundle#begin/end.
 Plugin 'tpope/vim-fugitive'
 Plugin 'airblade/vim-gitgutter'
-Plugin 'ctrlp.vim'
+"Plugin 'ctrlp.vim'
 Plugin 'dyng/ctrlsf.vim'
 Plugin 'scrooloose/nerdtree'
 Plugin 'scrooloose/syntastic'
@@ -32,6 +32,8 @@ Plugin 'greyblake/vim-preview'
 Plugin 'suan/vim-instant-markdown'
 Plugin 'TagHighlight'
 Plugin 'NLKNguyen/papercolor-theme'
+Plugin 'junegunn/fzf'
+Plugin 'junegunn/fzf.vim'
 "Plugin 'RKLogColorize'
 " This seems to cause some indent issues with my JS code
 "Plugin 'luochen1990/indent-detector.vim'
@@ -83,6 +85,13 @@ autocmd FileType python setlocal expandtab shiftwidth=4 softtabstop=4 tabstop=4
 nnoremap <F2> :set invpaste paste?<CR>
 set pastetoggle=<F2>
 set showmode
+
+"==========Moving between split panes==================
+map <C-j> <C-W>j
+map <C-k> <C-W>k
+map <C-h> <C-W>h
+map <C-l> <C-W>l
+"======================================================
 
 "======== Start of Status and tabline configs===========
 " Statusline, display always
@@ -139,8 +148,8 @@ highlight link GitGutterDeleteLine  DiffDelete
 "=========Buffer switching===============
 "nmap <C-Tab> :bnext<cr>
 "nmap <C-S-Tab> :bprevious<cr>
-nmap <F6> :bnext<cr>
-nmap <S-F6> :bprevious<cr>
+nmap bnn :bnext<cr>
+nmap bvv :bprevious<cr>
 "=========Buffer switching===============
 
 "==========Toggle Tag list==============
@@ -153,14 +162,19 @@ map <F7> :NERDTreeToggle<CR>
 let g:NERDTreeWinPos = "right"
 "==========NerdTree Toggle==============
 
+"===CTRL-P Mapping FZF==================
+nnoremap <C-p> :Files<Cr>
+"===CTRL-P Mapping FZF==================
 "===CTRL-P Default Search Directory=====
-let g:ctrlp_cmd='CtrlP:pwd'
+"let g:ctrlp_cmd='CtrlP:pwd'
 "===CTRL-P Default Search Directory=====
 "===CTRL-P maximum files and depth======
-let g:ctrlp_max_files=0
-let g:ctrlp_max_depth=40
+"let g:ctrlp_max_files=0
+"let g:ctrlp_max_depth=40
 "===CTRL-P maximum files and depth======
-
+"===CTRL-P Buffer======
+nnoremap <C-b> :Buffers<Cr>
+"===CTRL-P Buffer======
 "==========Map F5 to save===========
 inoremap <F5> <c-o>:Update<CR>
 "==========Map Ctrl+s to save===========
