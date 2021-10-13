@@ -34,6 +34,8 @@ Plugin 'TagHighlight'
 Plugin 'NLKNguyen/papercolor-theme'
 Plugin 'junegunn/fzf'
 Plugin 'junegunn/fzf.vim'
+Plugin 'brookhong/cscope.vim'
+Plugin 'jremmen/vim-ripgrep'
 "Plugin 'RKLogColorize'
 " This seems to cause some indent issues with my JS code
 "Plugin 'luochen1990/indent-detector.vim'
@@ -164,6 +166,7 @@ let g:NERDTreeWinPos = "right"
 
 "===CTRL-P Mapping FZF==================
 nnoremap <C-p> :Files<Cr>
+nnoremap <C-f> :RG<Cr>
 "===CTRL-P Mapping FZF==================
 "===CTRL-P Default Search Directory=====
 "let g:ctrlp_cmd='CtrlP:pwd'
@@ -214,6 +217,13 @@ function! RemoveTrailingSpaces()
     %s/\s\+$//e
     exe "normal 'tzt`s"
 endfunction
+
+command! -bang -nargs=* RG
+  \ call fzf#vim#grep(
+  \   'rg --column --line-number --hidden --ignore-case --no-heading --color=always '.shellescape(<q-args>), 1,
+  \   <bang>0 ? fzf#vim#with_preview({'options': '--delimiter : --nth 4..'}, 'up:60%')
+  \           : fzf#vim#with_preview({'options': '--delimiter : --nth 4..'}, 'right:50%:hidden', '?'),
+  \   <bang>0)
 
 " ==============================
 " Miscellaneous
