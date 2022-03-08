@@ -1,0 +1,594 @@
+diff --git scripts/makefile scripts/makefile
+index 9e092d0d..c91d50b9 100644
+--- scripts/makefile
++++ scripts/makefile
+@@ -11,6 +11,7 @@ SEED		?= ""
+ VERBOSITY	?= "UVM_LOW"
+ COV_SIM         ?= false
+ COV_METRICS     ?= tgl+assert
++SIMIO		?= true
+ 
+ 
+ ## CPU=semiCPU : Run code on semiCPU
+@@ -358,6 +359,9 @@ ifeq ($(DUT),$(filter $(DUT),full minimum gddr6))
+ VCS_ELAB_OPTIONS += ${DESIGNWARE_HOME}/vip/svt/common/latest/C/lib/amd64/libmemserver.so
+ endif
+ VCS_ELAB_OPTIONS += $(TIMESCALE) -full64 -lca -kdb -debug_access -sverilog -ntb_opts uvm-1.2 -top TestDriver +lint=PCWM +vcs+error=PCWM-L
++ifeq ($(SIMIO),true)
++VCS_ELAB_OPTIONS += -cflags "-DSIMIO"
++endif
+ VCS_ELAB_OPTIONS += ${DESIGN_DIR}/tb/base/semicpu/SemiCPU.cpp
+ ifeq ($(CPU),DSM)
+   VCS_ELAB_OPTIONS += ${DSM_MODEL_PATH}/${DSM_MODEL_NAME}.so
+diff --git tb_gen/configs/dut/dut_config.json tb_gen/configs/dut/dut_config.json
+index 7cbcbf84..f72ac80a 100644
+--- tb_gen/configs/dut/dut_config.json
++++ tb_gen/configs/dut/dut_config.json
+@@ -1269,6 +1269,29 @@
+     }
+   ],
+   "no_interface":[
++    {
++      "name":"simio",
++      "test_list":"../configs/test_list/simio_test_list.json",
++      "ip_config": "../configs/ip/arm_ca53_ip_config.json",
++      "template_path":"../templates",
++      "hierarchy":"",
++      "comp_opts":[],
++      "instance":{
++        "DUT":1,
++        "TB":1
++      },
++      "connect_port":[
++        {
++          "name":"",
++          "direction":"",
++          "bitwidth":"",
++          "connect":""
++        }
++      ],
++      "mailbox":{
++        "SIMIO_TEST_MSG":"0"
++      }
++    },
+     {
+       "name":"ca53",
+       "test_list":"../configs/test_list/ca53_test_list.json",
+diff --git tb_gen/configs/test_list/simio_test_list.json tb_gen/configs/test_list/simio_test_list.json
+new file mode 100644
+index 00000000..56328491
+--- /dev/null
++++ tb_gen/configs/test_list/simio_test_list.json
+@@ -0,0 +1,18 @@
++{
++  "name":"simio",
++  "test":[
++    {
++      "test_name":"qemu_test",
++      "uvm_test_name":"atom_base_test",
++      "seed":"random",
++      "timeout":"5",
++      "dut":"minimum",
++      "cpu":"semiCPU",
++      "upf":"false",
++      "sim_args":[],
++      "c_defines":[],
++      "ci_level":[],
++      "target_repo":["soc-atom-s5"]
++    }
++  ]
++}
+diff --git tb_gen/templates/ctests/include/simio_qemu_test.h tb_gen/templates/ctests/include/simio_qemu_test.h
+new file mode 100644
+index 00000000..77f26ac5
+--- /dev/null
++++ tb_gen/templates/ctests/include/simio_qemu_test.h
+@@ -0,0 +1,367 @@
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <stdarg.h>
++#include <execinfo.h>
++#include <time.h>
++#include <unistd.h>
++#include <fcntl.h>
++#include <poll.h>
++#include <errno.h>
++#include <pthread.h>
++#include <arpa/inet.h>
++#include <netinet/tcp.h>
++#include <netdb.h>
++#include <sys/socket.h>
++#include <sys/types.h>
++#include <sys/time.h>
++
++#include "verification_top.h"
++
++#ifdef DEBUG
++static inline void printStackTrace() 
++{
++#define MAX_CALL_DEPTH  (64)
++    void* frames[MAX_CALL_DEPTH]; 
++    int frameDepth = backtrace(frames, MAX_CALL_DEPTH); 
++    char** frameInfo = backtrace_symbols(frames, frameDepth); 
++
++    for (int i = 0; i < frameDepth; ++i) 
++        printf("%s\n", frameInfo[i]); 
++
++    free(frameInfo); 
++}
++#endif
++
++///////////////////////////////////////////////////////////////////////////////
++// SemiCPU helper functinos
++///////////////////////////////////////////////////////////////////////////////
++extern "C" void simulationTick(void);
++
++///////////////////////////////////////////////////////////////////////////////
++// SimIO definitions
++///////////////////////////////////////////////////////////////////////////////
++#ifndef SIMIO_PORT
++#define SIMIO_PORT      (5555)
++#endif
++#ifndef SIMIO_HOST
++#pragma message "macro undefined: SIMIO_HOST"
++#define SIMIO_HOST      "titan"
++#endif
++
++#define WRITE_ACK       (0x01)
++#define WRITE_REQ       (0x02)
++#define READ_ACK        (0x04)
++#define READ_REQ        (0x08)
++#define IRQ_ACK         (0x10)
++#define IRQ_REQ         (0x20)
++#define STOP_SIMIO      (0x80)
++
++#include <sys/time.h>
++
++static uint64_t utimestamp(void)
++{
++    struct timeval te;
++    gettimeofday(&te, NULL); // get current time
++    return (te.tv_sec*1000000LL + te.tv_usec); // calculate milliseconds
++}
++
++static char const * strutmdiff(uint64_t epoch)
++{
++    static char tmstrbuf[128];
++    sprintf(tmstrbuf, "%5llu.%06llu", (utimestamp()-epoch)/1000000LL, (utimestamp()-epoch)%1000000LL);
++    return tmstrbuf;
++}
++
++static const char* pkt_type(uint32_t type)
++{
++    switch(type) {
++        case WRITE_REQ:
++            return "req[wr]";
++        case READ_REQ:
++            return "req[rd]";
++        case IRQ_REQ:
++            return "req[int]";
++        case WRITE_ACK:
++            return "ack[wr]";
++        case READ_ACK:
++            return "ack[rd]";
++        case IRQ_ACK:
++            return "ack[int]";
++        case STOP_SIMIO:
++            return "stop";
++    }
++
++    return "Unknown";
++}
++
++typedef struct pkt_info {
++    uint8_t type;
++    uint8_t size;   /* min: 1, max: sizeof(long) */
++    uint16_t sv16;  /* sv48 support */
++    uint32_t sv32;
++} req_info_t;
++
++typedef struct simio_pkt {
++    union {
++        req_info_t info;
++        uint64_t hdr;
++    };
++    uint64_t data;
++} simio_pkt_t;
++
++#define SIMIO_PACKET_SIZE   (sizeof(simio_pkt_t))
++
++#define MAX_EVENTS_SIZE     (32)
++#define REQ_INFO(d)         ((req_info_t *)&(d))
++#define DOORBELL            (BASE_SIM_HOST + SIM_HOST_DOORBELL_OFFSET)
++#define USEC_PER_MS         (1000)
++
++static void setSocketNonBlock(int client_fd)
++{
++    /* Change the socket into Non-Blocking state */
++    int flag = fcntl(client_fd, F_GETFL, 0);
++
++    fcntl(client_fd, F_SETFL, flag | O_NONBLOCK);
++}
++
++static int gClientSocket;
++
++static int getClientSocket(void)
++{
++    if (!gClientSocket) {
++        struct sockaddr_in client_addr;
++
++        gClientSocket = socket(PF_INET, SOCK_STREAM, 0);
++
++        client_addr.sin_addr.s_addr = inet_addr(SIMIO_HOST);
++        client_addr.sin_family = AF_INET;
++
++        if (client_addr.sin_addr.s_addr == INADDR_NONE) {
++            struct hostent *hp = gethostbyname(SIMIO_HOST);
++            if (!hp) {
++                printf("[%s] Unknown host: %s\n", __func__, SIMIO_HOST);
++                return -1;
++            }
++            client_addr.sin_family = hp->h_addrtype;
++            memcpy(&(client_addr.sin_addr.s_addr), hp->h_addr, hp->h_length);
++#ifdef DEBUG
++            printf("[%s] %s addr: %s\n", __func__, hp->h_name, inet_ntoa(*(struct in_addr*)(hp->h_addr)));
++#endif
++        }
++
++        client_addr.sin_port = htons(SIMIO_PORT);
++
++        if (connect(gClientSocket, (struct sockaddr *)&client_addr, sizeof(client_addr)) == -1) {
++            printf("[%s] Cannot connect to %s:%d (error = %d)\n", __func__, SIMIO_HOST, SIMIO_PORT, errno);
++            close(gClientSocket);
++            return -1;
++        }
++    }
++
++    return gClientSocket;
++}
++
++extern "C" void SimIORaiseIRQ(int irq_num)
++{
++    int client_fd;
++
++    printf("[%s] Entering ... (irq : %d)\n", __func__, irq_num);
++
++    client_fd = getClientSocket();
++    simio_pkt_t packet;
++
++    packet.info.type = IRQ_REQ;
++    packet.data = irq_num;
++    send(client_fd, &packet, sizeof(packet), 0);
++
++    printf("[%s] Exiting ...\n", __func__);
++}
++
++#ifdef MULTI_THREADED_TIME_CONSUMING
++static pthread_cond_t consumeTimeCond = PTHREAD_COND_INITIALIZER;
++static pthread_mutex_t consumeTimeMutex = PTHREAD_MUTEX_INITIALIZER;
++static bool keepRunning = true;
++
++static long getuSecPerClock(void)
++{
++    struct timeval start, finish;
++
++    gettimeofday(&start, NULL);
++    simulationTick();
++    gettimeofday(&finish, NULL);
++
++    long elapsed_usec = finish.tv_usec - start.tv_usec;
++    long elapsed_sec = finish.tv_sec - start.tv_sec;
++    long elapsed = (elapsed_sec * 1000000) + elapsed_usec;
++
++    printf("[%s] A clock consumed %ld usec\n", __func__, elapsed);
++
++    return elapsed;
++}
++
++static void *consumeTimeWrapper(void *opaque)
++{
++    pthread_mutex_lock(&consumeTimeMutex);
++
++    while(keepRunning) {
++        pthread_cond_wait(&consumeTimeCond, &consumeTimeMutex);
++        simulationTick();
++    }
++
++    pthread_mutex_unlock(&consumeTimeMutex);
++    return NULL;
++}
++
++#define STOP    (false)
++#define EXEC    (true)
++
++static void consumeTimeEvent(bool condition)
++{
++    pthread_mutex_lock(&consumeTimeMutex);
++
++    keepRunning = condition;
++    pthread_cond_signal(&consumeTimeCond);
++
++    pthread_mutex_unlock(&consumeTimeMutex);
++}
++#endif
++
++extern "C" int SimIOConnService(int flag)
++{
++    int client_fd, event_ready;
++    int timeout_ms;
++    ssize_t pkt_size;
++
++    simio_pkt_t packet;
++    uint64_t addr, data;
++    uint16_t type, size;
++#ifdef MULTI_THREADED_TIME_CONSUMING
++    long usec_per_clock;
++#endif
++    uint64_t epoch = utimestamp();
++    char tmpstr[128];
++
++    (void)flag;
++
++    print_string("[SimIOConnService] Entering ...\n");
++
++    client_fd = getClientSocket();
++    if (client_fd < 0) {
++        printf("[%s] socket create error (error = %d)\n", __func__, errno);
++        goto finish;
++    }
++
++    setSocketNonBlock(client_fd);
++
++    print_string("Connection initialized\n");
++
++#ifdef MULTI_THREADED_TIME_CONSUMING
++    /*
++     * EXPERIMENTAL: multi-threaded time consuming
++     */
++    pthread_t consumeTimeThread;
++    if (pthread_create(&consumeTimeThread, NULL, consumeTimeWrapper, NULL)) {
++        printf("[%s] pthread create error (error = %d)\n", __func__, errno);
++        goto error;
++    }
++    /*
++     * NOTE: It may need to consider edge cases:
++     * usec_per_clock > 1000 (Consuming a clock takes over 1 sec)
++     */
++    usec_per_clock = getuSecPerClock();
++    timeout_ms = (usec_per_clock + USEC_PER_MS - 1) / USEC_PER_MS;
++#else
++    timeout_ms = 0; // set pollfd as non-blocking
++#endif
++
++    /*
++     * Set up a pollfd to poll() the client socket
++     */
++    pollfd poll_fd;
++    poll_fd.fd      = client_fd;
++    poll_fd.events  = POLLIN;
++
++    while (true) {
++#ifdef MULTI_THREADED_TIME_CONSUMING
++        consumeTimeEvent(EXEC);
++#else
++        simulationTick();
++#endif
++        event_ready = poll(&poll_fd, 1, timeout_ms);
++
++        if (event_ready < 0) {
++            if (errno == EINTR)
++                continue;
++
++            sprintf(tmpstr, "[%s] Error while polling socket! (error = %d)\n", __func__, errno);
++            print_string(tmpstr);
++            goto error;
++        }
++#ifdef MULTI_THREADED_TIME_CONSUMING
++        else if (event_ready == 0) {
++            printf("[%s] poll() timed out. Consuming clock ...\n", __func__);
++            continue;
++        }
++#endif
++        pkt_size = recv(client_fd, (void *)&packet, SIMIO_PACKET_SIZE, 0);
++
++        if (pkt_size < 0) {
++            if (errno == EAGAIN)
++                continue;
++
++            sprintf(tmpstr, "[%s] recv() failed from %s:%d (errno = %d)\n", __func__, SIMIO_HOST, SIMIO_PORT, errno);
++            print_string(tmpstr);
++            goto error;
++        }
++        else if (pkt_size == SIMIO_PACKET_SIZE) {
++            addr = ((uint64_t)(packet.info.sv16) << 32) + (uint64_t)(packet.info.sv32);
++            type = packet.info.type;
++            size = packet.info.size;
++            data = packet.data;
++
++            sprintf(tmpstr, "[%s] recv() type=%s, size=%hd, addr=0x%016lx, data=0x%016lx from %s:%d\n", strutmdiff(epoch),
++                    pkt_type(type), size, addr, data, SIMIO_HOST, SIMIO_PORT);
++            print_string(tmpstr);
++
++            switch (type) {
++                case STOP_SIMIO:
++                {
++                    goto error;
++                }                    
++                case READ_REQ:
++                {
++                    data = readl((volatile void __iomem *)addr); /* 64bit size */
++                    packet.data = data;
++                    packet.info.type = READ_ACK;
++                    break;
++                }
++                case WRITE_REQ:
++                {
++                    writel(data, (volatile void __iomem *)addr);
++                    packet.info.type = WRITE_ACK;
++                    break;
++                }                    
++            }
++
++            send(client_fd, &packet, sizeof(packet), 0);
++
++            sprintf(tmpstr,"[%s] send() type=%s, size=%hd, addr=0x%016lx, data=0x%016lx from %s:%d\n", strutmdiff(epoch),
++                    pkt_type(packet.info.type), size, addr, packet.data, SIMIO_HOST, SIMIO_PORT);
++            print_string(tmpstr);
++        }
++    }
++
++error:
++    print_string("[SimIOConnService] ERROR!\n");
++#ifdef MULTI_THREADED_TIME_CONSUMING
++    consumeTimeEvent(STOP);
++    pthread_join(consumeTimeThread, NULL);
++#endif
++    close(client_fd);
++finish:
++    print_string("[SimIOConnService] FINISH\n");
++    printf("[%s] Exiting ...\n", strutmdiff(epoch));
++
++    return 0;
++}
+diff --git tb_gen/templates/ctests/ip/simio/simio_qemu_test/makefile tb_gen/templates/ctests/ip/simio/simio_qemu_test/makefile
+new file mode 100644
+index 00000000..32c25f1e
+--- /dev/null
++++ tb_gen/templates/ctests/ip/simio/simio_qemu_test/makefile
+@@ -0,0 +1,38 @@
++PROGRAM ?= $(notdir $(shell pwd))
++
++VERI_SRC ?=
++LDFLAGS  ?=
++
++COMMON = ../..
++COMMON_INC = $(COMMON)/include
++TEST_SRC = ./
++TEST_INC = ./
++UNITY = $(FREEDOM_METAL)/internal/unity
++UNITY_INC = $(UNITY)
++
++vpath %.cpp $(COMMON) $(TEST_SRC) $(UNITY)
++vpath %.h $(COMMON_INC) $(TEST_INC) $(UNITY_INC)
++
++override CFLAGS += -I$(COMMON_INC) -I$(TEST_INC) -I$(UNITY_INC)
++override CXXFLAGS += -I$(COMMON_INC) -I$(TEST_INC) -I$(UNITY_INC)
++
++override CFLAGS += -DUNITY_INCLUDE_VERIF_MAIN_C
++override CFLAGS += -DUNITY_EXCLUDE_MATH_H
++override CFLAGS += -DUNITY_EXCLUDE_LIMITS_H
++override CFLAGS += -DUNITY_FIXTURE_NO_EXTRAS
++override CFLAGS += -DUNITY_EXCLUDE_FLOAT_PRINT
++
++
++
++
++$(PROGRAM): \
++	$(wildcard *.cpp) $(wildcard *.h) \
++	$(wildcard $(COMMON)/*.cpp) $(wildcard $(COMMON_INC)/*.h) \
++	$(wildcard $(TEST_SRC)/*.cpp) $(wildcard $(TEST_INC)/*.h) \
++	$(wildcard $(UNITY)/*.c) $(wildcard $(UNITY_INC)/*.h) \
++	$(VERI_SRC) \
++
++	$(CC) $(CFLAGS) $(LDFLAGS) $(filter %.c %.cpp %.S,$^) $(LOADLIBES) $(LDLIBS) -o $@
++
++clean:
++	rm -f $(PROGRAM) $(PROGRAM).hex
+diff --git tb_gen/templates/ctests/ip/simio/simio_qemu_test/simio_qemu_test.cpp tb_gen/templates/ctests/ip/simio/simio_qemu_test/simio_qemu_test.cpp
+new file mode 100644
+index 00000000..c151d883
+--- /dev/null
++++ tb_gen/templates/ctests/ip/simio/simio_qemu_test/simio_qemu_test.cpp
+@@ -0,0 +1,69 @@
++#include <stdlib.h>
++#include <stdio.h>
++#include <verification_top.h>
++#include <simio_qemu_test.h>
++
++const char *logo[] = {
++    "\n\n",
++    "███████╗██╗███╗   ███╗██╗ ██████╗ \n",
++    "██╔════╝██║████╗ ████║██║██╔═══██╗\n",
++    "███████╗██║██╔████╔██║██║██║   ██║\n",
++    "╚════██║██║██║╚██╔╝██║██║██║   ██║\n",
++    "███████║██║██║ ╚═╝ ██║██║╚██████╔╝\n",
++    "╚══════╝╚═╝╚═╝     ╚═╝╚═╝ ╚═════╝ \n",
++    "\n\n",
++    NULL
++};
++
++static void show_logo(void)
++{
++    int i = 0;
++
++    while (true) {
++        if (logo[i] == NULL)
++        break;
++
++        print_string(logo[i]);
++        i++;
++    };
++}
++
++extern "C" int main_SimIO(int argc, const char *argv[]) {
++    #define TEST_SIZE 128
++    static unsigned int buffer0[TEST_SIZE];
++    static unsigned int buffer1[TEST_SIZE];
++    int errorCount = 0;
++    unsigned int i, size;
++    char tmpstr[128];
++
++    size = TEST_SIZE;
++    for (i = 0; i < size; i++) {
++        buffer0[i] = (unsigned int) rand();
++        writel(buffer0[i], BOOTRAM_BASE_ADDR + i);
++        buffer1[i] = readl(BOOTRAM_BASE_ADDR + i);
++    }
++
++    for (i = 0; i < size; i++) {
++        if (buffer0[i] != buffer1[i]) {
++            sprintf(tmpstr, "*E: buffer0[%d](0x%02x) != buffer1[%d](0x%02x)\n",
++                i, buffer0[i], i, buffer1[i] );
++            print_string(tmpstr);
++            errorCount++;
++        }
++    }
++
++    if (0 == errorCount) {
++        print_string("*I: PASSED\n");
++        show_logo();
++    } else {
++        print_string("*E: FAILED : ");
++        print_decimal(errorCount);
++        print_string(" errors\n");
++    }
++
++    return 0;
++}
++
++extern "C" void IRQHandler( int interrupt_number ){
++    printf( "IRQHandler: %d\n", interrupt_number );
++}
+diff --git tb_gen/templates/script/makefile tb_gen/templates/script/makefile
+index eee4749e..353b6da8 100644
+--- tb_gen/templates/script/makefile
++++ tb_gen/templates/script/makefile
+@@ -11,6 +11,7 @@ SEED		?= ""
+ VERBOSITY	?= "UVM_LOW"
+ COV_SIM         ?= false
+ COV_METRICS     ?= tgl+assert
++SIMIO		?= true
+ 
+ 
+ ## CPU=semiCPU : Run code on semiCPU
+@@ -338,6 +339,9 @@ ifeq ($(DUT),$(filter $(DUT),full minimum gddr6))
+ VCS_ELAB_OPTIONS += ${DESIGNWARE_HOME}/vip/svt/common/latest/C/lib/amd64/libmemserver.so
+ endif
+ VCS_ELAB_OPTIONS += $(TIMESCALE) -full64 -lca -kdb -debug_access -sverilog -ntb_opts uvm-1.2 -top TestDriver +lint=PCWM +vcs+error=PCWM-L
++ifeq ($(SIMIO),true)
++VCS_ELAB_OPTIONS += -cflags "-DSIMIO"
++endif
+ VCS_ELAB_OPTIONS += ${DESIGN_DIR}/tb/base/semicpu/SemiCPU.cpp
+ ifeq ($(CPU),DSM)
+   VCS_ELAB_OPTIONS += ${DSM_MODEL_PATH}/${DSM_MODEL_NAME}.so

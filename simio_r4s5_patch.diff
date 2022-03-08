@@ -1,0 +1,81 @@
+diff --git tb/base/semicpu/SemiCPU.cpp tb/base/semicpu/SemiCPU.cpp
+old mode 100644
+new mode 100755
+index 71fc1f5e..5c8258c5
+--- tb/base/semicpu/SemiCPU.cpp
++++ tb/base/semicpu/SemiCPU.cpp
+@@ -22,7 +22,9 @@ extern "C" void semiCPULeaveCriticalSection(void);
+ 
+ typedef int (*main_func) (int argc, const char *argv[]);
+ typedef void (*irq_func) (int hartid);
++typedef int (*conn_func) (int);
+ static char custom_APPPath[4096];
++#ifndef SIMIO
+ static main_func custom_Main      = NULL;
+ static irq_func  custom_IRQHandler= NULL;
+ 
+@@ -68,3 +70,64 @@ void semiCPURunIRQ ( int intID ){
+     if(custom_IRQHandler){ custom_IRQHandler(intID); }
+ }
+ 
++#else
++static main_func custom_Main      = NULL;
++static irq_func  custom_IRQHandler= NULL;
++static conn_func custom_ConnQEMU = NULL;
++
++#define CONN_NONBLOCK  (0x1)
++#define CONN_THREADED  (0x2)
++
++void semiCPURegisterLocalmemory( unsigned long int address, unsigned int bytes ){
++
++}
++void semiCPULoadHex( const char* hexFileName, unsigned long int entry_point ){
++    strcpy( custom_APPPath, hexFileName );
++    void *plugin = dlopen(hexFileName, RTLD_NOW);
++    if (!plugin)
++    {
++        printf("Cannot load %s: %s", hexFileName, dlerror ());
++        return;
++    }
++    const char* result;
++    custom_Main = (main_func)dlsym (plugin, "main_SimIO");
++    result = dlerror();
++    if (result)
++    {
++        printf("Cannot find query in %s: %s", hexFileName, result);
++        return;
++    }
++
++    custom_IRQHandler = (irq_func)dlsym (plugin, "SimIORaiseIRQ");
++    result = dlerror();
++    if (result)
++    {
++        printf("Cannot find query in %s: %s", hexFileName, result);
++        return;
++    }
++
++    custom_ConnQEMU = (conn_func)dlsym (plugin, "SimIOConnService");
++    result = dlerror();
++    if (result)
++    {
++        printf("Cannot find query in %s: %s", hexFileName, result);
++        return;
++    }
++
++    custom_ConnQEMU(CONN_NONBLOCK);
++}
++
++void semiCPURunHex ( unsigned long int entry_point, int hartid ){
++    if(custom_Main){
++        int argc = 2;
++        const char* UnityFixture_Silent = "-s";
++        const char* argv[2] = { custom_APPPath, UnityFixture_Silent };
++        custom_Main(argc,argv);
++    }
++}
++
++void semiCPURunIRQ ( int intID ){
++    if(custom_IRQHandler){ custom_IRQHandler(intID); }
++}
++#endif
++
